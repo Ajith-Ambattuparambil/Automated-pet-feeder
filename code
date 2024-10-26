@@ -1,0 +1,169 @@
+#include <ESP8266WiFi.h>
+#include <Adafruit_MQTT.h>
+#include <Adafruit_MQTT_Client.h>
+#include <Servo.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>  // Include the library for I2C LCD
+
+// Replace with your network credentials
+#define WIFI_SSID "Redmi Note 13 5G"
+#define WIFI_PASSWORD "achakutty"
+
+// Replace with your Adafruit IO credentials
+#define AIO_SERVER      "io.adafruit.com"
+#define AIO_SERVERPORT  1883
+#define AIO_USERNAME    "Empuraan"
+#define AIO_KEY         "aio_IhoH69oxCzHmTCua0ErqGsKl0Xf7"
+
+// Servo setup
+Servo myServo;
+int servoPin = D4;  // GPIO pin D4 connected to the servo motor
+
+// WiFi and MQTT setup
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
+
+// Feed subscription for triggering the servo from Google Assistant
+Adafruit_MQTT_Subscribe feedPet = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/petf");
+
+// NTP Client setup for time (adjusted for UTC+5:30)
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 19800, 60000);  // 19800 seconds = UTC+5:30
+
+// LCD setup (address 0x27 is common for I2C LCDs, adjust if necessary)
+LiquidCrystal_I2C lcd(0x27, 16, 2); // 16x2 LCD display (address, columns, rows)
+
+// Function to connect to WiFi
+void connectToWiFi() {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Connecting WiFi...");
+    Serial.print("Connecting to WiFi...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("Connected to WiFi");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi Connected!");
+    delay(2000); // Display connection status for 2 seconds
+}
+
+void connectToMQTT() {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Connecting MQTT");
+    Serial.print("Connecting to MQTT...");
+    int8_t ret;
+    while ((ret = mqtt.connect()) != 0) {
+        Serial.print("MQTT connection failed: ");
+        Serial.println(mqtt.connectErrorString(ret));
+        mqtt.disconnect();
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("MQTT Failed");
+        delay(5000); // Retry after 5 seconds
+    }
+    Serial.println("Connected to MQTT");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("MQTT Connected!");
+    delay(2000); // Display connection status for 2 seconds
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    // LCD setup
+    lcd.begin();
+    lcd.backlight();  // Turn on the backlight
+
+    // Display message on LCD
+    lcd.setCursor(0, 0);
+    lcd.print("Starting...");
+
+    // Servo setup
+    myServo.attach(servoPin);
+
+    // Connect to WiFi
+    connectToWiFi();
+
+    // Set up MQTT feed subscription
+    mqtt.subscribe(&feedPet);
+
+    // Start the NTP client
+    timeClient.begin();
+
+    // Set servo to default closed position
+    myServo.write(0);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("System Ready");
+    delay(2000); // Wait 2 seconds before starting main loop
+}
+
+void loop() {
+    // Ensure WiFi and MQTT connections are alive
+    if (WiFi.status() != WL_CONNECTED) {
+        connectToWiFi();
+    }
+    if (!mqtt.connected()) {
+        connectToMQTT();
+    }
+
+    mqtt.processPackets(10);
+
+    // Check if the feed trigger is received from IFTTT (Google Assistant)
+    Adafruit_MQTT_Subscribe *subscription;
+    while ((subscription = mqtt.readSubscription(5000))) {
+        if (subscription == &feedPet) {
+            Serial.println("Manual feeding via Google Assistant...");
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("Manual Feeding...");
+            feedPetFunction();  // Feed pet manually
+        }
+    }
+
+    // Update time
+    timeClient.update();
+    String formattedTime = timeClient.getFormattedTime();
+
+    // Display time on the LCD
+    lcd.setCursor(0, 1);  // Show time on the second line of the LCD
+    lcd.print("Time: ");
+    lcd.print(formattedTime);
+
+    // Check if it's time for automatic feeding (e.g., 06:30 PM daily)
+    String currentTime = formattedTime.substring(0, 5);  // Extract HH:MM
+    if (currentTime == "18:30") {  // Example: feed at 06:30 PM
+        Serial.println("Automatic feeding at 06:30 PM...");
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Auto Feeding...");
+        feedPetFunction();  // Automatic feeding
+    }
+}
+
+// Function to control the feeding process
+void feedPetFunction() {
+    Serial.println("Feeding the pet...");
+    lcd.setCursor(0, 1);
+    lcd.print("Feeding...");
+
+    // Open the lid (servo motor to 90 degrees)
+    myServo.write(100);  // Adjust angle as needed to open the lid
+    delay(5000);        // Wait for 5 seconds (adjust based on the actual feeding duration)
+    
+    // Close the lid (servo motor back to 0 degrees)
+    myServo.write(0);   // Close the lid
+    Serial.println("Feeding done!");
+    lcd.setCursor(0, 1);
+    lcd.print("Feeding Done!");
+    delay(2000);  // Display feeding done for 2 seconds
+}
